@@ -13,6 +13,7 @@ from functions.card_quality import (
     find_target_form,
     production_candidate,
     reviewed_card_plan,
+    target_forms,
 )
 
 
@@ -40,6 +41,27 @@ class CardQualityTests(unittest.TestCase):
         self.assertEqual(find_target_form(entry, "Barnet har vuxit snabbt."), "vuxit")
         pronoun = {"word": "vi", "inflections": {}}
         self.assertIsNone(find_target_form(pronoun, "Han har sett oss."))
+
+    def test_common_omitted_paradigm_forms_are_available_for_exact_matching(
+        self,
+    ) -> None:
+        passive = {
+            "word": "notera",
+            "tags": ["verb"],
+            "inflections": {"present": "noterar", "past": "noterade"},
+        }
+        self.assertIn("noterades", target_forms(passive))
+        reflexive = {
+            "word": "bry sig",
+            "tags": ["verb"],
+            "inflections": {"present": "bryr sig"},
+        }
+        self.assertIn("bryr mig", target_forms(reflexive))
+        possessive = {"word": "sin", "tags": ["pronoun"], "inflections": {}}
+        self.assertIn("sitt", target_forms(possessive))
+        self.assertIn("sina", target_forms(possessive))
+        genitive = {"word": "månad", "tags": ["noun"], "inflections": {}}
+        self.assertIn("månads", target_forms(genitive))
 
     def test_discontinuous_construction_matches_both_visible_parts(self) -> None:
         entry = {"word": "varken…eller", "inflections": {}}

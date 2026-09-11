@@ -953,7 +953,15 @@ def validate_cards(
                     f"{label}: target_form is not the lemma or a known inflection"
                 )
             if not _contains_form(sentence, target_form):
-                raise ValueError(f"{label}: target_form does not occur in sentence")
+                visible_allowed = [
+                    form
+                    for form in target.allowed_target_forms
+                    if _contains_form(sentence, form)
+                ]
+                if len(visible_allowed) == 1:
+                    target_form = visible_allowed[0]
+                else:
+                    raise ValueError(f"{label}: target_form does not occur in sentence")
             note = normalize_optional_note(item["note"], f"{label}: note")
             production = item["production"]
             cleaned_production: dict[str, str] | None = None

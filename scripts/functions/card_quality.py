@@ -102,6 +102,44 @@ def target_forms(entry: dict[str, Any]) -> tuple[str, ...]:
             )
     elif word and pos == "adjective":
         forms.extend(f"{word}{suffix}" for suffix in ("t", "a", "are", "ast"))
+
+    # Productive Swedish forms that source paradigms often omit. These are only
+    # sent to review when the complete form is literally visible in a source
+    # sentence, so they cannot license a merely related stem or compound.
+    if pos == "verb":
+        for form in tuple(forms):
+            parts = form.split()
+            if not parts:
+                continue
+            finite = parts[0]
+            passive = f"{finite[:-1]}s" if finite.endswith("r") else f"{finite}s"
+            forms.append(" ".join((passive, *parts[1:])))
+            if parts[-1].casefold() == "sig":
+                prefix = parts[:-1]
+                forms.extend(
+                    " ".join((*prefix, pronoun))
+                    for pronoun in ("mig", "dig", "oss", "er")
+                )
+    elif pos == "noun":
+        forms.extend(
+            f"{form}s"
+            for form in tuple(forms)
+            if form and not form.casefold().endswith(("s", "x", "z"))
+        )
+    elif pos in {"pronoun", "determiner"}:
+        if word.endswith("in") and len(word) == 3:
+            forms.extend((f"{word[:-1]}tt", f"{word[:-1]}na"))
+        elif word in {"vår", "er"}:
+            forms.extend((f"{word}t", f"{word}a"))
+        forms.extend(
+            {
+                "all": ("allt", "alla"),
+                "annan": ("annat", "andra"),
+                "någon": ("något", "några"),
+                "vilken": ("vilket", "vilka"),
+                "sådan": ("sådant", "sådana"),
+            }.get(word.casefold(), ())
+        )
     if pos == "conjunction" and len(parts := word.split()) == 2:
         forms.append(f"{parts[0]}…{parts[1]}")
     return tuple(dict.fromkeys(form for form in forms if form))

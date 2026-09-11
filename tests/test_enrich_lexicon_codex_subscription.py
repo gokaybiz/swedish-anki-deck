@@ -582,8 +582,16 @@ class CodexExampleTests(unittest.TestCase):
         cards = validated[target.id]["cards"]
         self.assertEqual(cards[0]["source_indices"], [0, 1])  # type: ignore[index]
 
+        wrong_selection = copy.deepcopy(response)
+        wrong_selection[target.id]["cards"][0]["target_form"] = "modersmålet"
+        corrected = validate_cards([target], wrong_selection)
+        self.assertEqual(
+            corrected[target.id]["cards"][0]["target_form"],  # type: ignore[index]
+            "modersmål",
+        )
+
         invalid = copy.deepcopy(response)
-        invalid[target.id]["cards"][0]["target_form"] = "modersmålet"
+        invalid[target.id]["cards"][0]["sentence"] = "Svenska är hennes språk."
         with self.assertRaisesRegex(ValueError, "does not occur"):
             validate_cards([target], invalid)
 
