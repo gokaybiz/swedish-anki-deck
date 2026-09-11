@@ -1,10 +1,9 @@
 # Swedish Vocabulary A1–C2 for Anki
 
 Python tools for building a Swedish vocabulary deck ordered by the Kelly List.
-The source inventory contains **8,551 lexical entries**: 8,420 Kelly entries,
-87 particle verbs, and 44 idiomatic expressions. The final Anki note count is
-determined by reviewed sense splitting and merging rather than equated with the
-entry count.
+The source inventory contains **8,420 Kelly lexical entries**. The final Anki
+note count is determined by reviewed sense splitting and merging rather than
+equated with the entry count.
 
 The repository keeps source acquisition, lexical conversion, generated speech,
 and Anki export as separate inspectable steps. Generated JSON, raw downloads,
@@ -23,7 +22,6 @@ official raw sources → local JSON → reviewed lexical enrichment → reviewed
 | `enrich_cefr_levels_local.py` | Proposes conservative learner levels locally from SVALex/SweLLex evidence; uses no LLM tokens. |
 | `enrich_lexicon_codex_subscription.py` | Proposes missing lexical fields and holistic learner-card plans through an authenticated Codex/ChatGPT subscription. |
 | `enrich_lexicon_openai_batch.py` | Provides the same lexical and card-review contracts through the metered OpenAI API and Batch API. |
-| `expressions_to_json.py` | Converts the reviewed idioms/particle-verbs workbook to JSON. |
 | `json_to_audio.py` | Generates content-addressed TTS for every reviewed sense-card sentence with `edge-tts`; no key required. |
 | `json_to_anki.py` | Previews or, only with `--apply`, creates/updates separate recognition and chunk-production note types. |
 | `verify_json_frequency.py` | Audits ranks without changing data. |
@@ -38,9 +36,49 @@ python3 -m pip install -r requirements.txt
 
 The preferred enrichment workflow uses an authenticated `codex` CLI and does
 not read `OPENAI_API_KEY`. The functionally equivalent
-`enrich_lexicon_openai_batch.py` workflow uses that key. Both use the same learner-facing
-quality and usage-note contract. Source downloads and `edge-tts` need network
-access but no API credentials.
+`enrich_lexicon_openai_batch.py` workflow uses that key. Both use the same
+learner-facing quality and usage-note contract. Source downloads and `edge-tts`
+need network access but no API credentials.
+
+## Quick start: build your own deck
+
+The two Codex stages are intentionally separate. The first fills missing
+lexical data; the second (`--kind cards`, plural) reviews every complete entry
+and creates the learner-facing sense plan. Applying lexical proposals does not
+apply card proposals that have not been generated yet.
+
+```bash
+# 1. Sources and local lexical JSON
+python3 scripts/download_sources.py --download
+python3 scripts/kelly_to_json.py
+
+# 2. Optional evidence-based CEFR estimates (no LLM)
+python3 scripts/enrich_cefr_levels_local.py propose
+# inspect review/cefr_level_proposals.jsonl
+python3 scripts/enrich_cefr_levels_local.py apply --apply
+
+# 3. Missing definitions, examples, notes, and inflections
+python3 scripts/enrich_lexicon_codex_subscription.py propose \
+  --workers 3 --max-batches 0
+# inspect review/lexicon_codex_subscription_proposals.jsonl
+python3 scripts/enrich_lexicon_codex_subscription.py apply --apply
+
+# 4. AI review and generation of one learner plan per lexical entry
+python3 scripts/enrich_lexicon_codex_subscription.py propose \
+  --kind cards --production-limit 1000 --workers 3 --max-batches 0
+# inspect the newly appended cards-v2 rows, then apply again
+python3 scripts/enrich_lexicon_codex_subscription.py apply --apply
+
+# 5. Audio, read-only Anki preview, then explicit export
+python3 scripts/json_to_audio.py --dry-run
+python3 scripts/json_to_audio.py --synthesize
+python3 scripts/json_to_anki.py --core data/json --audio-dir build/audio
+python3 scripts/json_to_anki.py --core data/json --audio-dir build/audio --apply
+```
+
+Both `apply --apply` commands mutate local source JSON but never contact Anki.
+Only the final `json_to_anki.py --apply` command imports notes and media. Omit
+that flag to keep the exporter read-only.
 
 ## Reproducible build
 
@@ -289,11 +327,23 @@ lexical output, so card batches are capped internally at 100 targets (85
 batches currently) even when the general `--batch-size` is 250.
 
 Every source sense must be covered exactly once. Redundant senses may merge;
-distinct senses remain separate. The model must produce one contextual meaning,
-a target form that is both a known form and literally present in the reviewed
-sentence, and a revalidated note or null. Existing definitions/examples remain
-immutable provenance even when the learner-facing plan corrects a weak example
-such as an object-form sentence for `vi`.
+distinct senses remain separate. Each retained sense receives one contextual
+meaning plus optional closely related wording instead of an untested
+semicolon-separated gloss list. The model must also produce a target form that
+is both accepted for the entry and literally present in the reviewed sentence,
+and a revalidated note or null. Existing definitions/examples remain immutable
+provenance even when the learner-facing plan corrects a weak example such as an
+object-form sentence for `vi`.
+
+Target matching covers explicit source paradigms plus conservative productive
+forms that dictionaries commonly omit: Swedish s-passives, noun genitives,
+reflexive person realizations for lexical `... sig` constructions, and common
+possessive/determiner agreement forms. Validation may repair the model's chosen
+`target_form` only when exactly one other accepted form occurs as a complete
+form in the final sentence. It still rejects ambiguous matches, unrelated
+compounds/derivations, and examples that demonstrate another paradigm member
+instead of the requested target. The accepted span is stored and highlighted
+on the recognition card.
 
 Production eligibility is local-first and capped. A score rewards reviewed
 A1–B2 evidence, Kelly frequency, informative Folkets constructions, idioms,
@@ -304,6 +354,44 @@ return null. Approved production cues describe a situation or function and add
 a bounded Swedish target-family hint when needed; the pipeline never reverses
 all vocabulary cards mechanically. The approved item becomes a separate chunk
 note rather than adding empty production fields to every vocabulary note.
+Use `--production-limit 0` for a recognition-only deck. Choose the limit before
+the first card-plan run and keep it unchanged across retries; completed stable
+IDs are intentionally not regenerated merely because a later command uses a
+different limit.
+
+### Card-review options and retries
+
+`--kind cards` is not part of the default lexical enrichment run. Run it only
+after applying lexical proposals, then run `apply --apply` again after reviewing
+the card proposals. Useful options are:
+
+- `--production-limit N` — maximum locally ranked entries that may receive a
+  dedicated chunk-production note; all retained senses still receive
+  recognition notes;
+- `--workers N` — concurrent Codex CLI processes (2–4 recommended);
+- `--batch-size N` — requested targets per call; card batches are capped at 100
+  because their responses are larger than lexical responses;
+- `--max-batches N` — stop after N batches; `0` means all pending batches;
+- `--limit N` — process only the first N pending targets;
+- `--dry-run` — show pending counts and batches without calling Codex or writing
+  proposals.
+
+Proposal JSONL files are resumability state; do not delete them between runs.
+Successful stable IDs are skipped, while rejected targets remain pending. Retry
+with the same command. As the easy entries complete, the remainder may be
+concentrated in exact-form validation cases and therefore show a higher
+rejection percentage. Smaller batches give those entries more attention:
+
+```bash
+python3 scripts/enrich_lexicon_codex_subscription.py propose \
+  --kind cards --production-limit 1000 --batch-size 20 \
+  --workers 3 --max-batches 0
+```
+
+The failure JSONL is an append-only diagnostic history; old failure rows do not
+block a later success. Card-plan v2 IDs coexist safely with older lexical
+proposal rows. A source digest prevents a stale plan from being applied after
+its lexical source changes.
 
 The equivalent metered OpenAI API workflow remains available but is not needed
 for the standard subscription pipeline:
