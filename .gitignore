@@ -10,13 +10,14 @@ venv/
 !.env.example
 *.key
 
-# Generated lexical data, reports, and audio
+# Downloaded/generated lexical data, reports, and audio
+data/raw/
 cache/
 audio/
 review/
 data/json/
 data/expressions/
-build/audio/
+build/
 *.jsonl
 *.anki2
 *.anki21b
