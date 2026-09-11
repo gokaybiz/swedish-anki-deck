@@ -1,43 +1,30 @@
-"""Regenerate the two Swedish example-audio files that were flagged for review.
+"""Regenerate two explicitly corrected example clips with keyless edge-tts.
 
-This intentionally touches only ``en ätt`` (rank 437) and ``still`` (rank
-3904). It never edits JSON. The two spoken strings below are explicit fixes:
-the original ätt example included an English quotation, and the still JSON had
-its Swedish and English example fields swapped.
-
-Inspect first (no API call):
-    python redo_flagged_audio.py
-
-Create/replace the two cache MP3 files:
-    python redo_flagged_audio.py --synthesize
-
-Also replace the files in a currently open Anki profile through AnkiConnect:
-    python redo_flagged_audio.py --synthesize --install-in-anki
-
-After they have been generated once, install the cached files into a different
-Anki profile without calling Azure again:
-    python redo_flagged_audio.py --install-in-anki
+This repair utility only writes content-addressed files and their manifest under
+``build/audio``. It has no AnkiConnect/import capability; the user remains in
+control of any later deck update.
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
-import json
-import os
-import time
-import xml.sax.saxutils
+import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
+from functions.tts import (
+    DEFAULT_VOICE,
+    audio_filename,
+    edge_tts_version,
+    file_sha256,
+    load_manifest,
+    save_manifest,
+    spoken_fingerprint,
+    synthesize_to_file,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "cache" / "audio"
-VOICE = "sv-SE-SofieNeural"
-OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
-
-# Keep these as explicit text overrides rather than changing the original data.
+OUTPUT = ROOT / "build" / "audio"
 TARGETS = (
     {
         "rank": 437,
@@ -54,92 +41,91 @@ TARGETS = (
 )
 
 
-def synthesize(text: str, key: str, region: str) -> bytes:
-    """Call Azure Speech once, retrying only temporary errors."""
-    ssml = (
-        '<speak version="1.0" xml:lang="sv-SE"><voice name="'
-        + VOICE
-        + '">'
-        + xml.sax.saxutils.escape(text)
-        + "</voice></speak>"
-    ).encode("utf-8")
-    request = Request(
-        f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1",
-        data=ssml,
-        headers={
-            "Ocp-Apim-Subscription-Key": key,
-            "Content-Type": "application/ssml+xml",
-            "X-Microsoft-OutputFormat": OUTPUT_FORMAT,
-            "User-Agent": "swedish-anki-deck-audio-repair/1.0",
-        },
-        method="POST",
-    )
-    for attempt in range(4):
-        try:
-            with urlopen(request, timeout=30) as response:
-                audio = response.read()
-            if not audio:
-                raise RuntimeError("Azure returned an empty audio response")
-            return audio
-        except HTTPError as exc:
-            if exc.code not in {429, 500, 502, 503, 504} or attempt == 3:
-                detail = exc.read().decode("utf-8", errors="replace")[:300]
-                raise RuntimeError(f"Azure HTTP {exc.code}: {detail}") from exc
-        except URLError as exc:
-            if attempt == 3:
-                raise RuntimeError(f"Azure network error: {exc.reason}") from exc
-        time.sleep(2**attempt)
-    raise AssertionError("unreachable")
-
-
-def anki(action: str, **params: object) -> object:
-    payload = json.dumps({"action": action, "version": 6, "params": params}).encode("utf-8")
-    request = Request("http://127.0.0.1:8765", data=payload, headers={"Content-Type": "application/json"})
-    with urlopen(request, timeout=15) as response:
-        reply = json.loads(response.read())
-    if reply.get("error"):
-        raise RuntimeError(f"AnkiConnect: {reply['error']}")
-    return reply["result"]
+async def regenerate(args: argparse.Namespace) -> None:
+    manifest = load_manifest(args.output)
+    entries = manifest.setdefault("entries", {})
+    assert isinstance(entries, dict)
+    version = edge_tts_version()
+    for target in TARGETS:
+        fingerprint = spoken_fingerprint(
+            target["text"],
+            args.voice,
+            rate=args.rate,
+            volume=args.volume,
+            pitch=args.pitch,
+            engine_version=version,
+        )
+        filename = audio_filename(target["stem"], fingerprint)
+        destination = args.output / filename
+        existing = entries.get(target["stem"])
+        current = (
+            isinstance(existing, dict)
+            and existing.get("fingerprint") == fingerprint
+            and destination.is_file()
+            and existing.get("sha256") == file_sha256(destination)
+        )
+        if current and not args.overwrite:
+            print(f"#{target['rank']} already current: {destination.name}")
+            continue
+        print(f"Synthesizing #{target['rank']} ({target['word']})…", flush=True)
+        await synthesize_to_file(
+            target["text"],
+            destination,
+            voice=args.voice,
+            rate=args.rate,
+            volume=args.volume,
+            pitch=args.pitch,
+            retries=args.retries,
+        )
+        entries[target["stem"]] = {
+            "source": f"manual-repair-rank-{target['rank']}",
+            "source_stem": target["stem"],
+            "definition_index": 0,
+            "text": target["text"],
+            "voice": args.voice,
+            "rate": args.rate,
+            "volume": args.volume,
+            "pitch": args.pitch,
+            "engine": "edge-tts",
+            "engine_version": version,
+            "fingerprint": fingerprint,
+            "file": filename,
+            "bytes": destination.stat().st_size,
+            "sha256": file_sha256(destination),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "role": "example_tts",
+        }
+        save_manifest(args.output, manifest)
+        print(f"  wrote {destination}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--synthesize", action="store_true", help="Call Azure and overwrite only the two cache MP3s.")
-    parser.add_argument("--install-in-anki", action="store_true", help="Replace their existing Anki media files too; requires Anki + AnkiConnect.")
+    parser.add_argument("--output", type=Path, default=OUTPUT)
+    parser.add_argument(
+        "--synthesize",
+        action="store_true",
+        help="Generate/replace the two corrected edge-tts clips.",
+    )
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--voice", default=DEFAULT_VOICE)
+    parser.add_argument("--rate", default="+0%")
+    parser.add_argument("--volume", default="+0%")
+    parser.add_argument("--pitch", default="+0Hz")
+    parser.add_argument("--retries", type=int, default=3)
     args = parser.parse_args()
+    if args.overwrite and not args.synthesize:
+        parser.error("--overwrite requires --synthesize")
+    if args.retries < 0:
+        parser.error("--retries must be non-negative")
     for target in TARGETS:
         print(f"#{target['rank']}: {target['word']}\n  {target['text']}")
-    if not args.synthesize and not args.install_in_anki:
-        print("Dry run only. No files or API calls were made.")
+    if not args.synthesize:
+        print(
+            "Preview only. No files, network calls, or Anki operations were performed."
+        )
         return
-
-    key, region = os.environ.get("AZURE_SPEECH_KEY"), os.environ.get("AZURE_SPEECH_REGION")
-    if args.synthesize and (not key or not region):
-        parser.error("Set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION in this PowerShell session first.")
-    if args.synthesize:
-        OUTPUT.mkdir(parents=True, exist_ok=True)
-    for target in TARGETS:
-        destination = OUTPUT / f"{target['stem']}.mp3"
-        if args.synthesize:
-            print(f"Synthesizing #{target['rank']} ({target['word']})…", flush=True)
-            audio = synthesize(str(target["text"]), key, region)
-            temporary = destination.with_suffix(".mp3.part")
-            temporary.write_bytes(audio)
-            temporary.replace(destination)
-            print(f"  wrote {destination}")
-        else:
-            if not destination.is_file() or destination.stat().st_size == 0:
-                parser.error(f"Cached MP3 is missing: {destination}. Re-run with --synthesize.")
-            audio = destination.read_bytes()
-        if args.install_in_anki:
-            media_name = f"sv_core__{target['stem']}.mp3"
-            anki(
-                "storeMediaFile",
-                filename=media_name,
-                data=base64.b64encode(audio).decode("ascii"),
-                deleteExisting=True,
-            )
-            print(f"  replaced Anki media: {media_name}")
+    asyncio.run(regenerate(args))
 
 
 if __name__ == "__main__":
