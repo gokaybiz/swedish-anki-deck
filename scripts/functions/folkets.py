@@ -45,6 +45,7 @@ class FolketsRecord:
     headword: str
     word_class: str
     translations: tuple[str, ...]
+    source_definitions: tuple[str, ...]
     definition_translations: tuple[str, ...]
     examples: tuple[tuple[str, str], ...]
     paradigm: tuple[str, ...]
@@ -100,6 +101,11 @@ class FolketsLexicon:
                     for child in element.findall("translation")
                     if (value := source_text(child.get("value")))
                 )
+                source_definitions = tuple(
+                    value
+                    for definition in element.findall("definition")
+                    if (value := source_text(definition.get("value")))
+                )
                 definition_translations = tuple(
                     value
                     for definition in element.findall("definition")
@@ -137,6 +143,7 @@ class FolketsLexicon:
                         headword=headword,
                         word_class=word_class,
                         translations=translations,
+                        source_definitions=source_definitions,
                         definition_translations=definition_translations,
                         examples=tuple(examples),
                         paradigm=paradigm,
@@ -190,9 +197,30 @@ class FolketsLexicon:
     ) -> list[dict[str, object]]:
         # Repeated glosses across sense records are a useful weak signal for the
         # common reading of an otherwise indistinguishable homograph.
-        grouped: dict[str, list[tuple[int, str, str, str, tuple[str, ...]]]] = (
-            defaultdict(list)
+        grouped: dict[
+            tuple[str, tuple[str, ...]],
+            list[tuple[int, str, str, str, tuple[str, ...]]],
+        ] = defaultdict(list)
+        broad_gloss_counts: Counter[str] = Counter()
+        broad_best_candidates: dict[str, list[tuple[bool, bool, int]]] = defaultdict(
+            list
         )
+        for record in records:
+            glosses = record.translations or record.definition_translations
+            if glosses:
+                gloss = "; ".join(dict.fromkeys(glosses[:3])).casefold()
+                broad_gloss_counts[gloss] += 1
+                example, translation = next(
+                    ((source, target) for source, target in record.examples if target),
+                    record.examples[0] if record.examples else ("", ""),
+                )
+                broad_best_candidates[gloss].append(
+                    (not bool(translation), not bool(example), record.source_order)
+                )
+        broad_best_orders = {
+            gloss: min(candidates)[2]
+            for gloss, candidates in broad_best_candidates.items()
+        }
         for record in records:
             glosses = record.translations or record.definition_translations
             if not glosses:
@@ -202,13 +230,25 @@ class FolketsLexicon:
                 ((source, target) for source, target in record.examples if target),
                 record.examples[0] if record.examples else ("", ""),
             )
-            grouped[definition.casefold()].append(
+            sense_evidence = record.definition_translations or (
+                record.source_definitions
+                if broad_gloss_counts[definition.casefold()] > 1
+                else ()
+            )
+            evidence_identity = tuple(
+                normalize(value)
+                for value in (
+                    *record.source_definitions,
+                    *record.definition_translations,
+                )
+            )
+            grouped[(definition.casefold(), evidence_identity)].append(
                 (
                     record.source_order,
                     definition,
                     example,
                     translation,
-                    record.definition_translations,
+                    sense_evidence,
                 )
             )
 
@@ -230,6 +270,41 @@ class FolketsLexicon:
                 )
             )
         ranked.sort()
+        # Preserve broad-gloss diversity before spending the two-sense budget
+        # on source-distinguished readings of the same English gloss. This adds
+        # physical/figurative splits such as läger without displacing an
+        # already retained, differently translated sense elsewhere.
+        readings_by_gloss: dict[
+            str, list[tuple[int, int, int, str, str, str, tuple[str, ...]]]
+        ] = defaultdict(list)
+        for candidate in ranked:
+            readings_by_gloss[candidate[3].casefold()].append(candidate)
+        broad_readings: list[tuple[int, int, int, str, str, str, tuple[str, ...]]] = []
+        additional_readings: list[
+            tuple[int, int, int, str, str, str, tuple[str, ...]]
+        ] = []
+        for gloss, candidates in readings_by_gloss.items():
+            primary = min(
+                candidates,
+                key=lambda candidate: (
+                    candidate[2] != broad_best_orders[gloss],
+                    candidate,
+                ),
+            )
+            broad_readings.append(primary)
+            additional_readings.extend(
+                candidate for candidate in candidates if candidate is not primary
+            )
+        broad_readings.sort(
+            key=lambda candidate: (
+                -broad_gloss_counts[candidate[3].casefold()],
+                candidate[1],
+                candidate[2],
+            )
+        )
+        additional_readings.sort()
+        selected = (broad_readings + additional_readings)[:limit]
+
         result: list[dict[str, object]] = []
         for (
             _,
@@ -239,7 +314,7 @@ class FolketsLexicon:
             example,
             translation,
             sense_glosses,
-        ) in ranked[:limit]:
+        ) in selected:
             item: dict[str, object] = {
                 "definition": definition,
                 "example": example,

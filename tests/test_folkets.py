@@ -20,6 +20,11 @@ XML = """<?xml version="1.0" encoding="utf-8"?>
   <word value="bok" lang="sv" class="nn"><translation value="book" comment="a bound publication"/><phonetic value="bu:k"/><variant value="bokform"/><grammar value="läsa &amp;"/><use value="concrete noun"/><synonym value="volym"/><compound value="skolbok"/><derivation value="boklig"/><explanation value="En tryckt eller digital publikation."/><paradigm><inflection value="boken"/><inflection value="böcker"/></paradigm><example value="Jag läser en bok."><translation value="I am reading a book."/></example></word>
   <word value="bok" lang="sv" class="vb"><translation value="book"/></word>
   <word value="bror|son" lang="sv" class="nn"><translation value="nephew"/><definition><translation value="the son of somebody's brother"/></definition></word>
+  <word value="läger" lang="sv" class="nn"><translation value="camp"/><definition value="plats där en grupp personer inkvarteras i tält eller baracker"/></word>
+  <word value="läger" lang="sv" class="nn"><translation value="camp"/><example value="dela sig i två läger"><translation value="split into two camps"/></example><definition value="grupp, parti"/></word>
+  <word value="liv" lang="sv" class="nn"><translation value="life"/><example value="ett långt liv"><translation value="a long life"/></example><definition value="levande tillstånd"/></word>
+  <word value="liv" lang="sv" class="nn"><translation value="life"/><example value="det politiska livet"><translation value="political life"/></example><definition value="verksamhet inom ett område"/></word>
+  <word value="liv" lang="sv" class="nn"><translation value="row; commotion"/><example value="liv och rörelse"><translation value="hustle and bustle"/></example></word>
   <word value="vara" lang="sv" class="vb"><translation value="last"/><paradigm><inflection value="varade"/><inflection value="varat"/><inflection value="vara"/><inflection value="varar"/></paradigm></word>
   <word value="vara" lang="sv" class="vb"><translation value="be"/><paradigm><inflection value="var"/><inflection value="varit"/><inflection value="var"/><inflection value="vara"/><inflection value="är"/></paradigm></word>
   <word value="fick" lang="sv" class=""><see value="få"/></word>
@@ -70,6 +75,37 @@ class FolketsTests(unittest.TestCase):
                     },
                 }
             ],
+        )
+
+    def test_identical_english_glosses_keep_distinct_source_senses(self) -> None:
+        definitions = self.lexicon.definitions(self.lexicon.lookup("läger", "noun"))
+        self.assertEqual(
+            definitions,
+            [
+                {
+                    "definition": "camp",
+                    "example": "dela sig i två läger",
+                    "example_translation": "split into two camps",
+                    "source_hints": {"sense_glosses": ["grupp, parti"]},
+                },
+                {
+                    "definition": "camp",
+                    "example": "",
+                    "example_translation": "",
+                    "source_hints": {
+                        "sense_glosses": [
+                            "plats där en grupp personer inkvarteras i tält eller baracker"
+                        ]
+                    },
+                },
+            ],
+        )
+
+    def test_source_sense_split_does_not_displace_another_broad_gloss(self) -> None:
+        definitions = self.lexicon.definitions(self.lexicon.lookup("liv", "noun"))
+        self.assertEqual(
+            [definition["definition"] for definition in definitions],
+            ["life", "row; commotion"],
         )
 
     def test_lexical_info_preserves_useful_non_gloss_fields(self) -> None:
