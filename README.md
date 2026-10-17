@@ -1,5 +1,8 @@
 # Swedish Vocabulary A1–C2 for Anki
 
+> **Book-based Anki deck:** For `words.csv` and spoiler-safe Swedish/English/Turkish vocabulary notes, use [`BOOK_WORKFLOW.md`](BOOK_WORKFLOW.md) and `scripts/book_pipeline.py`. Kelly remains available for the original workflow below.
+
+
 Python tools for building a Swedish vocabulary deck ordered by the Kelly List.
 The source inventory contains **8,420 Kelly lexical entries**. The final Anki
 note count is determined by reviewed sense splitting and merging rather than
